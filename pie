@@ -1,0 +1,107 @@
+#!/bin/sh
+# pie: run the EPITA PIE desktop in a container, viewed with a native VNC client.
+#   pull    download the prebuilt image from a registry (students)
+#   setup   build the image locally (maintainer; reuses the local PIE closure)
+#   run     start it and open your VNC viewer (default)
+#   status  image + container state
+#   reset   stop the container
+#
+# `pull` needs the registry ref in PIE_IMAGE, e.g.
+#   PIE_IMAGE=registry.forge.epita.fr/<group>/pie-desktop:latest ./pie pull
+# Needs docker and a VNC viewer (macOS built in, else virt-viewer ~2MB).
+# AFS mounts inside the desktop with your EPITA login.
+# shellcheck disable=SC2059  # color codes are intentionally inside printf formats
+set -eu
+
+# shellcheck disable=SC1007  # CDPATH= scopes an empty CDPATH to this cd only
+SELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+IMG=pie-desktop:latest
+REMOTE="${PIE_IMAGE:-}"      # registry ref for `pull`, e.g. registry.forge.epita.fr/<group>/pie-desktop:latest
+NAME=pie
+PORT=5901
+ADDR=127.0.0.1:$PORT
+
+if [ -t 1 ]; then G='\033[32m' B='\033[36m' R='\033[31m' N='\033[0m'; else G='' B='' R='' N=''; fi
+ok()      { printf "${G}[+]${N} %s\n" "$1"; }
+info()    { printf "${B}[*]${N} %s\n" "$1"; }
+err()     { printf "${R}[-]${N} %s\n" "$1" >&2; }
+need()    { command -v "$1" >/dev/null 2>&1 || { err "$1 not found: $2"; exit 1; }; }
+running() { [ -n "$(docker ps -q -f "name=^${NAME}$" 2>/dev/null)" ]; }
+confirm() { printf "%s [y/N] " "$1"; read -r a </dev/tty 2>/dev/null || a=n; case "$a" in y|Y) ;; *) return 1;; esac; }
+free_gb() { df -Pk "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /)" 2>/dev/null | awk 'NR==2{print int($4/1048576)}'; }
+
+# open the best available native VNC client (macOS has one built in). virt-viewer
+# (remote-viewer) is the recommended one: cross-platform, full keyboard grab.
+view() {
+    case "$(uname -s)" in
+        Darwin) open "vnc://$ADDR" 2>/dev/null & ;;
+        *)
+            if   command -v remote-viewer >/dev/null 2>&1; then remote-viewer "vnc://$ADDR" >/dev/null 2>&1 &
+            elif command -v vncviewer     >/dev/null 2>&1; then vncviewer "$ADDR"           >/dev/null 2>&1 &
+            elif command -v gvncviewer    >/dev/null 2>&1; then gvncviewer "$ADDR"          >/dev/null 2>&1 &
+            else
+                info "no VNC viewer found. Install virt-viewer (~2MB), then open vnc://$ADDR"
+                info "  Arch: pacman -S virt-viewer   Debian/Ubuntu: apt install virt-viewer   Fedora: dnf install virt-viewer"
+            fi ;;
+    esac
+}
+
+cmd_run() {
+    need docker "https://docs.docker.com/get-docker/"
+    docker image inspect "$IMG" >/dev/null 2>&1 \
+        || { err "no image. Download it: $0 pull   (or build locally: $0 setup)"; exit 1; }
+    if running; then
+        info "already running"
+    else
+        docker run -d --name "$NAME" \
+            --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
+            -p "$ADDR:$PORT" "$IMG" >/dev/null
+        info "starting the desktop..."
+        i=0
+        while [ "$i" -lt 40 ]; do
+            docker exec "$NAME" sh -c 'DISPLAY=:1 i3-msg -t get_version' >/dev/null 2>&1 && break
+            i=$((i + 1)); sleep 0.5
+        done
+        ok "running on vnc://$ADDR"
+    fi
+    info "log in with epita / epita, or run 'afs' in a terminal for your AFS"
+    view
+}
+
+cmd_setup() {
+    need docker "https://docs.docker.com/get-docker/"
+    docker image inspect nixos-pie:latest >/dev/null 2>&1 \
+        || { err "base image nixos-pie:latest not found. Not the maintainer? Download instead: $0 pull"; exit 1; }
+    info "building $IMG (reuses the local PIE closure; ~10 min)"
+    sh "$SELF/image/build-seed.sh"
+    ok "built. Start it: $0 run"
+}
+
+cmd_pull() {
+    need docker "https://docs.docker.com/get-docker/"
+    [ -n "$REMOTE" ] || { err "no registry set. Point PIE_IMAGE at it, e.g."; err "  PIE_IMAGE=registry.forge.epita.fr/<group>/pie-desktop:latest $0 pull"; exit 1; }
+    info "image: $REMOTE"
+    info "one-time download: roughly 12-15GB over the wire (30-60 min), ~30GB unpacked on disk"
+    g=$(free_gb); [ -z "$g" ] || [ "$g" -ge 35 ] || info "warning: only ${g}GB free where docker stores images"
+    confirm "download now?" || { info "cancelled"; exit 0; }
+    docker pull "$REMOTE"                       # docker prints its own per-layer progress
+    [ "$REMOTE" = "$IMG" ] || docker tag "$REMOTE" "$IMG"
+    ok "ready. Start it: $0 run"
+}
+
+cmd_status() {
+    need docker "https://docs.docker.com/get-docker/"
+    if docker image inspect "$IMG" >/dev/null 2>&1; then ok "image: built ($IMG)"; else info "image: not built (run: $0 setup)"; fi
+    if running; then ok "container: running (vnc://$ADDR)"; else info "container: stopped"; fi
+}
+
+cmd_reset() { docker rm -f "$NAME" >/dev/null 2>&1 || true; ok "stopped"; }
+
+case "${1:-run}" in
+    pull)   cmd_pull ;;
+    setup)  cmd_setup ;;
+    run)    cmd_run ;;
+    status) cmd_status ;;
+    reset)  cmd_reset ;;
+    *) printf "usage: %s {pull|setup|run|status|reset}\n" "$(basename "$0")"; exit 2 ;;
+esac
