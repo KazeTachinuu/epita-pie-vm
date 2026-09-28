@@ -81,7 +81,7 @@ let
         environment.systemPackages = [
           (pkgs.writeShellApplication {
             name = "afs";
-            runtimeInputs = with pkgs; [ krb5 sshfs fuse3 coreutils findutils zenity util-linux ];
+            runtimeInputs = with pkgs; [ krb5 sshfs fuse3 coreutils findutils gnugrep procps zenity util-linux ];
             excludeShellChecks = [ "SC2015" "SC2016" "SC2317" ];
             text = builtins.readFile /vm/afs;
           })

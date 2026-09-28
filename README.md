@@ -22,6 +22,8 @@ Defaults: 6 GB RAM, 4 CPUs, NAT. Any network, no VPN.
 
 Snapshot right after importing: that is your factory reset.
 
+`~/afs` stuck or not reconnecting: `afs off`, then `afs`.
+
 ## Docker container
 
 The same desktop over VNC, no hypervisor. Needs docker and a VNC viewer
@@ -43,3 +45,9 @@ over as a file (`docker save | zstd` / `docker load`).
   from a local PIE image then builds; ~30 min seed + 1-3 h build.
 - Container image: `./pie setup`. Needs `nixos-pie:latest` locally;
   ~10 min.
+
+## Test `afs`
+
+`tests/afs-lab.sh setup` fakes the EPITA gate locally (KDC + GSSAPI sshd,
+2 min tickets); `tests/afs-test.sh` replays the reconnect-the-next-day case.
+Root, Ubuntu/Debian with `/dev/fuse`; ~3 min.
