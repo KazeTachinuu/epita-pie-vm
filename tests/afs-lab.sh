@@ -1,23 +1,20 @@
 #!/bin/sh
 # afs-lab.sh: a local stand-in for the EPITA gate, to reproduce and test `afs`
-# without the CRI network. Needs root, /dev/fuse, iptables (Ubuntu/Debian).
+# without the CRI network. Needs root, /dev/fuse (Ubuntu/Debian).
 #
-#   tests/afs-lab.sh setup      KDC (realm CRI.EPITA.FR, short tickets) + sshd
-#                               with GSSAPI as ssh.cri.epita.fr + fake AFS tree
-#   tests/afs-lab.sh cut|heal   black-hole / restore the link to the gate
-#                               (what a host suspend or a NAT timeout does)
+#   tests/afs-lab.sh    KDC (realm CRI.EPITA.FR) + sshd with GSSAPI as
+#                       ssh.cri.epita.fr + fake AFS tree
 #
-# Client user: epita. EPITA login: xlogin, password: pw. Tickets live
-# $LIFE (default 2 min), so "wait a day" is "wait past $LIFE".
+# Client user: epita. EPITA login: xlogin, password: pw.
 set -eu
 
 REALM=CRI.EPITA.FR GATE=ssh.cri.epita.fr
-LOGIN=xlogin PASS=pw LIFE=${LIFE:-2m}
+LOGIN=xlogin PASS=pw
 AFS=/afs/cri.epita.fr/user/x/xl/$LOGIN/u
 
 setup() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    sshfs openssh-server krb5-kdc krb5-admin-server krb5-user iptables procps >/dev/null
+    sshfs openssh-server krb5-kdc krb5-admin-server krb5-user procps >/dev/null
 
   # the gate resolves to this machine
   sed -i "/[[:space:]]$GATE\b/d" /etc/hosts
@@ -28,7 +25,6 @@ setup() {
     default_realm = $REALM
     rdns = false
     dns_canonicalize_hostname = false
-    ticket_lifetime = $LIFE
 [realms]
     $REALM = {
         kdc = 127.0.0.1
@@ -38,14 +34,13 @@ EOF
   cat >/etc/krb5kdc/kdc.conf <<EOF
 [realms]
     $REALM = {
-        max_life = $LIFE
         kdc_tcp_listen = 88
     }
 EOF
   if [ ! -e /var/lib/krb5kdc/principal ]; then
     kdb5_util create -r "$REALM" -s -P masterpw >/dev/null
   fi
-  kadmin.local -q "addprinc -pw $PASS -maxlife $LIFE $LOGIN" >/dev/null 2>&1 || true
+  kadmin.local -q "addprinc -pw $PASS $LOGIN" >/dev/null 2>&1 || true
   kadmin.local -q "addprinc -randkey host/$GATE" >/dev/null 2>&1 || true
   rm -f /etc/krb5.keytab
   kadmin.local -q "ktadd -k /etc/krb5.keytab host/$GATE" >/dev/null
@@ -72,13 +67,4 @@ EOF
   echo "lab ready: su - epita, then run afs (login $LOGIN, password $PASS)"
 }
 
-case "${1:-}" in
-  setup) setup ;;
-  cut)   iptables -C INPUT -i lo -p tcp --dport 22 -j DROP 2>/dev/null \
-           || iptables -I INPUT -i lo -p tcp --dport 22 -j DROP
-         iptables -C INPUT -i lo -p tcp --sport 22 -j DROP 2>/dev/null \
-           || iptables -I INPUT -i lo -p tcp --sport 22 -j DROP ;;
-  heal)  iptables -D INPUT -i lo -p tcp --dport 22 -j DROP 2>/dev/null || true
-         iptables -D INPUT -i lo -p tcp --sport 22 -j DROP 2>/dev/null || true ;;
-  *)     echo "usage: $0 setup|cut|heal" >&2; exit 2 ;;
-esac
+setup

@@ -48,6 +48,6 @@ over as a file (`docker save | zstd` / `docker load`).
 
 ## Test `afs`
 
-`tests/afs-lab.sh setup` fakes the EPITA gate locally (KDC + GSSAPI sshd,
-2 min tickets); `tests/afs-test.sh` replays the reconnect-the-next-day case.
-Root, Ubuntu/Debian with `/dev/fuse`; ~3 min.
+`tests/afs-lab.sh` fakes the EPITA gate locally (KDC + GSSAPI sshd);
+`tests/afs-test.sh` replays the reconnect-the-next-day case in ~5 s.
+Root, Ubuntu/Debian with `/dev/fuse`.
