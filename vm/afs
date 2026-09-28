@@ -25,11 +25,20 @@ note() {
   elif [ "$1" = error ]; then fail "$2"
   else ok "$2"; fi
 }
-unmount() { fusermount3 -u "$MP" 2>/dev/null || fusermount -u "$MP" 2>/dev/null \
-            || umount "$MP" 2>/dev/null || true; }
+# /proc/mounts, not mountpoint(1): stat() on a hung FUSE mount blocks forever
+mounted() { grep -qsF " $MP fuse" /proc/mounts; }
+# clear a dead or hung mount: lazy unmount (a plain -u fails EBUSY while
+# requests hang on it), then kill its sshfs. With -o reconnect that process
+# outlives the dropped link and expired ticket, and would keep the mountpoint
+# wedged under the new mount.
+unmount() {
+  timeout 5 fusermount3 -uz "$MP" 2>/dev/null \
+    || timeout 5 fusermount -uz "$MP" 2>/dev/null || true
+  pkill -f "sshfs .* $MP\$" 2>/dev/null || true
+}
 
 # live mount -> done; stale endpoint from a dropped link -> clear and remount
-if mountpoint -q "$MP" 2>/dev/null; then
+if mounted; then
   if timeout 5 ls "$MP" >/dev/null 2>&1; then skip "already mounted at ~/afs"; exit 0; fi
   unmount
 fi
@@ -99,18 +108,25 @@ pdone() { stage_done
 
 # auto_cache, never kernel_cache: AFS changes externally and kernel_cache would
 # serve stale data. known_hosts -> /tmp: ssh's HOME is unwritable on the PIE.
+# BatchMode: if the ticket is refused, fail now instead of ssh waiting on a
+# password prompt nobody sees (that hang ends in timeout's SIGTERM, reported
+# by sshfs as "read: Interrupted system call").
 stage "mounting AFS via ssh.cri.epita.fr"
-log=$(mktemp)
-timeout 60 sshfs \
-    -o reconnect,StrictHostKeyChecking=accept-new,ConnectTimeout=15 \
-    -o auto_cache \
-    -o ssh_command="$(command -v ssh) -o GSSAPIAuthentication=yes -o GSSAPIDelegateCredentials=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o UserKnownHostsFile=/tmp/pie-known-hosts" \
-    "$login@ssh.cri.epita.fr:/afs/cri.epita.fr/user/$l1/$l2/$login/u/" "$MP" 2>"$log" || true
-msg=$(cat "$log" 2>/dev/null || true); rm -f "$log"
-
-# trust the actual mount state, not sshfs's exit code
-mountpoint -q "$MP" 2>/dev/null \
-  || { unmount; pdone; note error "could not mount AFS: ${msg:-unknown error}"; exit 1; }
+# two tries: after a long idle or a host suspend the first connection can stall
+for try in 1 2; do
+  log=$(mktemp); rc=0
+  timeout 60 sshfs \
+      -o reconnect,StrictHostKeyChecking=accept-new,ConnectTimeout=15 \
+      -o auto_cache \
+      -o ssh_command="$(command -v ssh) -o BatchMode=yes -o GSSAPIAuthentication=yes -o GSSAPIDelegateCredentials=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o UserKnownHostsFile=/tmp/pie-known-hosts" \
+      "$login@ssh.cri.epita.fr:/afs/cri.epita.fr/user/$l1/$l2/$login/u/" "$MP" 2>"$log" || rc=$?
+  msg=$(cat "$log" 2>/dev/null || true); rm -f "$log"
+  [ "$rc" -eq 124 ] && msg="timed out reaching ssh.cri.epita.fr (network down?)"
+  # trust the actual mount state, not sshfs's exit code
+  mounted && break
+  unmount
+  [ "$try" -eq 2 ] && { pdone; note error "could not mount AFS: ${msg:-unknown error}"; exit 1; }
+done
 stage_done
 
 # warm then apply the configs (same install.sh as campus); bounded: a stalled
