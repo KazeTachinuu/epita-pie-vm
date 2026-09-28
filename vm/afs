@@ -1,8 +1,10 @@
 #!/bin/sh
 # afs [login]: kinit -> GSSAPI ssh gate -> sshfs mount of your AFS -> apply
 # your .confs. The password is never stored.
+# afs off: drop the mount (also clears a stuck one). AFS_DEBUG=1: trace.
 # On a tty: marker output, no popups. No tty (dmenu, keybind): zenity.
 set -eu
+[ -z "${AFS_DEBUG:-}" ] || set -x
 
 MP="$HOME/afs"
 
@@ -36,6 +38,8 @@ unmount() {
     || timeout 5 fusermount -uz "$MP" 2>/dev/null || true
   pkill -f "sshfs .* $MP\$" 2>/dev/null || true
 }
+
+if [ "${1:-}" = off ]; then unmount; ok "AFS disconnected"; exit 0; fi
 
 # live mount -> done; stale endpoint from a dropped link -> clear and remount
 if mounted; then
