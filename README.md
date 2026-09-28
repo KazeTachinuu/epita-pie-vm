@@ -24,6 +24,12 @@ Snapshot right after importing: that is your factory reset.
 
 `~/afs` stuck or not reconnecting: `afs off`, then `afs`.
 
+Update `afs` inside an existing VM (no root, no new OVA):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/KazeTachinuu/epita-pie-vm/master/vm/hotfix.sh | sh
+```
+
 ## Docker container
 
 The same desktop over VNC, no hypervisor. Needs docker and a VNC viewer
