@@ -12,7 +12,8 @@ built from [epita/nixpie](https://github.com/epita/nixpie).
 plus `SHA256SUMS`.
 
 ```sh
-sha256sum -c SHA256SUMS
+sha256sum -c SHA256SUMS                                  # Linux, macOS
+Get-FileHash epita-pie-virtualbox.ova -Algorithm SHA256  # Windows (PowerShell)
 ```
 
 Import (VirtualBox: File > Import Appliance; VMware: File > Open), boot.
@@ -22,13 +23,15 @@ Defaults: 6 GB RAM, 4 CPUs, NAT. Any network, no VPN.
 
 Snapshot right after importing: that is your factory reset.
 
-`~/afs` stuck or not reconnecting: `afs off`, then `afs`.
-
-Update `afs` inside an existing VM (no root, no new OVA):
+First boot: update `afs` (no root, safe to re-run):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/KazeTachinuu/epita-pie-vm/master/vm/hotfix.sh | sh
 ```
+
+`~/afs` stuck or not reconnecting: `afs off`, then `afs`.
+
+Windows: VirtualBox slow (green turtle)? Hyper-V is on; use VMware.
 
 ## Docker container
 
@@ -37,7 +40,7 @@ The same desktop over VNC, no hypervisor. Needs docker and a VNC viewer
 
 ```sh
 ./pie pull      # prebuilt image: ~13 GB download, ~30 GB on disk
-./pie run       # start + open the VNC viewer (login epita/epita, or `afs`)
+./pie run       # start + open the VNC viewer (AFS login window, or `afs`)
 ./pie reset     # stop
 ```
 
@@ -56,4 +59,4 @@ over as a file (`docker save | zstd` / `docker load`).
 
 `tests/afs-lab.sh` fakes the EPITA gate locally (KDC + GSSAPI sshd);
 `tests/afs-test.sh` replays the reconnect-the-next-day case in ~5 s.
-Root, Ubuntu/Debian with `/dev/fuse`.
+Root, Ubuntu/Debian with `/dev/fuse`, or docker (see `tests/afs-lab.sh`).

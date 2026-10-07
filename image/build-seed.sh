@@ -26,7 +26,7 @@ mkdir -p "$BD"
 
 # 1. build the extras seed, emit its full runtime closure + the env store path.
 docker run --rm --privileged \
-    -v pie-nix-store:/nix -v "$SELF:/image:ro" -v "$BD:/out" \
+    -v pie-nix-store:/nix -v "$SELF:/image:ro" -v "$SELF/../vm:/vm:ro" -v "$BD:/out" \
     -e NIX_CONFIG="$NIX_CFG" \
     nixos/nix:latest sh -c '
         set -eu

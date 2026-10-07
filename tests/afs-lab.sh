@@ -1,6 +1,9 @@
 #!/bin/sh
 # afs-lab.sh: a local stand-in for the EPITA gate, to reproduce and test `afs`
-# without the CRI network. Needs root, /dev/fuse (Ubuntu/Debian).
+# without the CRI network. Needs root, /dev/fuse (Ubuntu/Debian), e.g.:
+#   docker run -d --name afslab --privileged -v "$PWD:/repo:ro" ubuntu:24.04 sleep infinity
+#   docker exec afslab sh -c 'apt-get update -qq && sh /repo/tests/afs-lab.sh'
+#   docker exec afslab sh /repo/tests/afs-test.sh
 #
 #   tests/afs-lab.sh    KDC (realm CRI.EPITA.FR) + sshd with GSSAPI as
 #                       ssh.cri.epita.fr + fake AFS tree
@@ -16,9 +19,9 @@ setup() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     sshfs openssh-server krb5-kdc krb5-admin-server krb5-user procps >/dev/null
 
-  # the gate resolves to this machine
-  sed -i "/[[:space:]]$GATE\b/d" /etc/hosts
-  echo "127.0.0.1 $GATE" >>/etc/hosts
+  # the gate resolves to this machine (no sed -i: bind mount in docker)
+  hosts=$(grep -v "[[:space:]]$GATE\$" /etc/hosts || true)
+  printf '%s\n127.0.0.1 %s\n' "$hosts" "$GATE" >/etc/hosts
 
   cat >/etc/krb5.conf <<EOF
 [libdefaults]

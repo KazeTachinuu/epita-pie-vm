@@ -64,7 +64,7 @@ cmd_run() {
         done
         ok "running on vnc://$ADDR"
     fi
-    info "log in with epita / epita, or run 'afs' in a terminal for your AFS"
+    info "log in on the AFS window, or run 'afs' in a terminal"
     view
 }
 

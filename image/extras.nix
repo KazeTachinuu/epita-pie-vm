@@ -14,9 +14,9 @@ let
     # no openssh here: the base ships openssh-with-gssapi, and `afs` finds it via
     # `command -v ssh`. A plain openssh would shadow it and break AFS (kinit works
     # but the GSSAPI handshake to the gate fails -> "connection reset by peer").
-    runtimeInputs = with pkgs; [ krb5 sshfs coreutils zenity util-linux ];
-    text = builtins.readFile /image/afs;
-    # the body is faithful sh from the VM module; skip strict lint rewrites
+    runtimeInputs = with pkgs; [ krb5 sshfs fuse3 coreutils findutils gnugrep procps zenity util-linux ];
+    # same script as the VM (build-seed.sh mounts vm/ at /vm)
+    text = builtins.readFile /vm/afs;
     excludeShellChecks = [ "SC2015" "SC2016" "SC2317" ];
   };
 
