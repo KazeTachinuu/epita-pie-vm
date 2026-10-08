@@ -18,7 +18,7 @@ ok()   { printf "${G}[+]${N} %s\n" "$1"; }
 skip() { printf "${D}[=] %s${N}\n" "$1"; }
 warn() { printf "${Y}[!]${N} %s\n" "$1" >&2; }
 fail() { printf "${R}[x]${N} %s\n" "$1" >&2; }
-TOTAL=3 STEP=0
+TOTAL=3 STEP=0 reused=
 step() { STEP=$((STEP + 1)); ok "[$STEP/$TOTAL] $1"; }
 
 gui() { [ ! -t 1 ] && [ -n "${DISPLAY:-}" ] && command -v zenity >/dev/null 2>&1; }
@@ -72,7 +72,7 @@ if mounted; then
   unmount
 fi
 
-login="${1:-}"
+login="${1:-}"; [ "$login" = on ] && login=
 login=$(printf %s "$login" | tr '[:upper:]' '[:lower:]'); login=${login%%@*}
 
 # a still-valid forwardable ticket (afs off, then afs): no password needed
@@ -80,7 +80,7 @@ login=$(printf %s "$login" | tr '[:upper:]' '[:lower:]'); login=${login%%@*}
 have=$(klist 2>/dev/null | sed -n 's/^Default principal: \(.*\)@CRI\.EPITA\.FR$/\1/p') || true
 if [ -n "$have" ] && { [ -z "$login" ] || [ "$login" = "$have" ]; } \
    && klist -s 2>/dev/null && klist -f 2>/dev/null | grep -q 'Flags: .*F'; then
-  login=$have
+  login=$have reused=1
   step "Kerberos ticket for $login (still valid)"
 else
 # Kerberos ticket; 3 tries max (more risks locking the account)
@@ -187,6 +187,12 @@ for try in 1 2; do
     # shellcheck disable=SC2086
     probe=$(timeout 25 $SSH -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new \
               "$login@ssh.cri.epita.fr" true 2>&1 </dev/null) && probe=""
+    # klist can call a ticket valid that the gate refuses (seen after afs off):
+    # drop it and start over with a password (no loop: the rerun runs kinit)
+    case "$reused$probe" in 1*"Permission denied"*)
+      pdone; warn "the gate refused your saved ticket: log in again"
+      kdestroy 2>/dev/null || true; exec "$0" "$login" ;;
+    esac
     pdone; note error "Could not mount AFS: $(mwhy "$probe$msg")"; exit 1
   fi
 done
