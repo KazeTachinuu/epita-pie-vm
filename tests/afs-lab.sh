@@ -23,14 +23,18 @@ setup() {
   hosts=$(grep -v "[[:space:]]$GATE\$" /etc/hosts || true)
   printf '%s\n127.0.0.1 %s\n' "$hosts" "$GATE" >/etc/hosts
 
+  # all KDCs local: after a failed password, clients retry the realm's
+  # master KDC, which DNS would resolve to EPITA's real one
   cat >/etc/krb5.conf <<EOF
 [libdefaults]
     default_realm = $REALM
     rdns = false
     dns_canonicalize_hostname = false
+    dns_lookup_kdc = false
 [realms]
     $REALM = {
         kdc = 127.0.0.1
+        master_kdc = 127.0.0.1
     }
 EOF
   mkdir -p /etc/krb5kdc
@@ -43,7 +47,10 @@ EOF
   if [ ! -e /var/lib/krb5kdc/principal ]; then
     kdb5_util create -r "$REALM" -s -P masterpw >/dev/null
   fi
-  kadmin.local -q "addprinc -pw $PASS $LOGIN" >/dev/null 2>&1 || true
+  # +requires_preauth like EPITA's KDC: a wrong password reads "Password
+  # incorrect" (not "not found"), and lockout policies count failures
+  kadmin.local -q "addprinc +requires_preauth -pw $PASS $LOGIN" >/dev/null 2>&1 \
+    || kadmin.local -q "modprinc +requires_preauth $LOGIN" >/dev/null 2>&1 || true
   kadmin.local -q "addprinc -randkey host/$GATE" >/dev/null 2>&1 || true
   rm -f /etc/krb5.keytab
   kadmin.local -q "ktadd -k /etc/krb5.keytab host/$GATE" >/dev/null

@@ -8,16 +8,17 @@ set -eu
 
 MP="$HOME/afs"
 
-# [+] step done  [=] already converged  [x] fatal
+# [+] step done  [=] already converged  [!] warning  [x] fatal
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
-    G='\033[1;32m' R='\033[31m' D='\033[2m' N='\033[0m'
+    G='\033[1;32m' R='\033[31m' Y='\033[33m' D='\033[2m' N='\033[0m'
 else
-    G='' R='' D='' N=''
+    G='' R='' Y='' D='' N=''
 fi
 ok()   { printf "${G}[+]${N} %s\n" "$1"; }
 skip() { printf "${D}[=] %s${N}\n" "$1"; }
+warn() { printf "${Y}[!]${N} %s\n" "$1" >&2; }
 fail() { printf "${R}[x]${N} %s\n" "$1" >&2; }
-TOTAL=4 STEP=0
+TOTAL=3 STEP=0
 step() { STEP=$((STEP + 1)); ok "[$STEP/$TOTAL] $1"; }
 
 gui() { [ ! -t 1 ] && [ -n "${DISPLAY:-}" ] && command -v zenity >/dev/null 2>&1; }
@@ -39,6 +40,30 @@ unmount() {
   pkill -f "sshfs .* $MP\$" 2>/dev/null || true
 }
 
+# kinit's answer in plain words; status 2: retrying cannot help
+kwhy() {
+  case "$1" in
+    *"Password incorrect"*|*"Preauthentication failed"*) echo "wrong password" ;;
+    *"not found in Kerberos database"*) echo "unknown login (expected: firstname.lastname)" ;;
+    *revoked*) echo "account locked by EPITA: wait a few minutes"; return 2 ;;
+    *"Clock skew"*) echo "the VM clock is wrong: reboot the VM"; return 2 ;;
+    ""|*"Cannot contact"*|*"Cannot find KDC"*|*resolve*|*"Network is unreachable"*)
+      echo "cannot reach EPITA: check the VM network"; return 2 ;;
+    *) echo "${1#kinit: }" ;;
+  esac
+}
+# sshfs's answer in plain words
+mwhy() {
+  case "$1" in
+    *"Permission denied"*) echo "the EPITA gate refused your login" ;;
+    *"No such file"*) echo "no AFS home found for $login" ;;
+    *"timed out"*|*refused*|*"Could not resolve"*|*unreachable*|*"No route"*)
+      echo "cannot reach ssh.cri.epita.fr: check the VM network" ;;
+    "") echo "unknown error" ;;
+    *) echo "$1" ;;
+  esac
+}
+
 if [ "${1:-}" = off ]; then unmount; ok "AFS disconnected"; exit 0; fi
 
 # live mount -> done; stale endpoint from a dropped link -> clear and remount
@@ -48,7 +73,16 @@ if mounted; then
 fi
 
 login="${1:-}"
+login=$(printf %s "$login" | tr '[:upper:]' '[:lower:]'); login=${login%%@*}
 
+# a still-valid forwardable ticket (afs off, then afs): no password needed
+# (|| true: no ticket fails klist, which pipefail turns into an exit)
+have=$(klist 2>/dev/null | sed -n 's/^Default principal: \(.*\)@CRI\.EPITA\.FR$/\1/p') || true
+if [ -n "$have" ] && { [ -z "$login" ] || [ "$login" = "$have" ]; } \
+   && klist -s 2>/dev/null && klist -f 2>/dev/null | grep -q 'Flags: .*F'; then
+  login=$have
+  step "Kerberos ticket for $login (still valid)"
+else
 # Kerberos ticket; 3 tries max (more risks locking the account)
 tries=0; hint="Connect your AFS"
 while :; do
@@ -71,10 +105,13 @@ while :; do
   kmsg=$(printf '%s' "$pass" | timeout 25 kinit -f "$login@CRI.EPITA.FR" 2>&1) \
     && { unset pass; break; }
   unset pass; tries=$((tries + 1)); login=
-  [ "$tries" -ge 3 ] && { note error "Login failed: ${kmsg:-wrong login or password}"; exit 1; }
-  hint="Login failed, try again"
+  why=$(kwhy "$kmsg") || { note error "Login failed: $why"; exit 1; }
+  [ "$tries" -ge 3 ] && { note error "Login failed: $why"; exit 1; }
+  gui || fail "$why ($((3 - tries)) tries left)"
+  hint="Login failed: $why ($((3 - tries)) tries left)"
 done
 step "Kerberos ticket for $login"
+fi
 
 [ -L "$MP" ] && rm -f "$MP"
 mkdir -p "$MP"
@@ -125,6 +162,7 @@ pdone() { stage_done
 # BatchMode: if the ticket is refused, fail now instead of ssh waiting on a
 # password prompt nobody sees (that hang ends in timeout's SIGTERM, reported
 # by sshfs as "read: Interrupted system call").
+SSH="$(command -v ssh) -o BatchMode=yes -o GSSAPIAuthentication=yes -o GSSAPIDelegateCredentials=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o UserKnownHostsFile=/tmp/pie-known-hosts"
 stage "mounting AFS via ssh.cri.epita.fr"
 # two tries: after a long idle or a host suspend the first connection can stall
 for try in 1 2; do
@@ -133,7 +171,7 @@ for try in 1 2; do
   timeout 60 sshfs \
       -o reconnect,StrictHostKeyChecking=accept-new,ConnectTimeout=15 \
       -o auto_cache \
-      -o ssh_command="$(command -v ssh) -o BatchMode=yes -o GSSAPIAuthentication=yes -o GSSAPIDelegateCredentials=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o UserKnownHostsFile=/tmp/pie-known-hosts" \
+      -o ssh_command="$SSH" \
       "$login@ssh.cri.epita.fr:/afs/cri.epita.fr/user/$l1/$l2/$login/u/" "$MP" 2>"$log" &
   mpid=$!
   wait "$mpid" || rc=$?
@@ -143,32 +181,43 @@ for try in 1 2; do
   # trust the actual mount state, not sshfs's exit code
   mounted && break
   unmount
-  [ "$try" -eq 2 ] && { pdone; note error "could not mount AFS: ${msg:-unknown error}"; exit 1; }
+  if [ "$try" -eq 2 ]; then
+    # sshfs reports every ssh failure as "Connection reset by peer"; ask ssh
+    # itself (network? refused?); if ssh works, the problem is the AFS path
+    # shellcheck disable=SC2086
+    probe=$(timeout 25 $SSH -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new \
+              "$login@ssh.cri.epita.fr" true 2>&1 </dev/null) && probe=""
+    pdone; note error "Could not mount AFS: $(mwhy "$probe$msg")"; exit 1
+  fi
 done
 stage_done
 
-# warm then apply the configs (same install.sh as campus); bounded: a stalled
-# link must never hang the script
-if [ -d "$MP/.confs" ]; then
-  stage "fetching your configs (.confs)"
-  timeout 120 find "$MP/.confs" -type f \
-      -not -path '*/.git/*' -not -path '*/undo/*' -not -name '.new.*' \
-      -exec cat {} + >/dev/null 2>&1 || true
-else
-  [ -n "$pfifo" ] || skip "no .confs on AFS, nothing to fetch"
-fi
-stage_done
+# usable now; the configs below only matter for new terminals
+gui || ok "AFS ready at ~/afs: you can start working"
+
+# apply the configs (same install.sh as campus), then warm their files in the
+# background: read one by one, each file is a round trip to the gate (minutes
+# for a big .confs); 16 at a time and detached, nobody waits for it
+applied=1
 if [ -x "$MP/.confs/install.sh" ]; then
   stage "applying your configs"
-  timeout 60 env AFS_DIR="$MP" "$MP/.confs/install.sh" >/dev/null 2>&1 || true
+  irc=0; timeout 60 env AFS_DIR="$MP" "$MP/.confs/install.sh" >/dev/null 2>&1 || irc=$?
+  stage_done
+  [ "$irc" -eq 0 ] || { applied=0
+    warn "your .confs/install.sh failed (exit $irc); AFS stays mounted"; }
 else
   [ -n "$pfifo" ] || skip "no install.sh, nothing to apply"
 fi
 pdone
+[ ! -d "$MP/.confs" ] || setsid sh -c 'find "$1" -type f -not -path "*/.git/*" -not -path "*/undo/*" \
+    -not -name ".new.*" -print0 | timeout 300 xargs -0 -P 16 -n 16 cat' _ "$MP/.confs" \
+    >/dev/null 2>&1 </dev/null &
 
 if gui; then
-  zenity --info --timeout=8 --title="EPITA AFS" --width=340 \
-      --text="AFS connected at ~/afs.\nYour configs are applied: open a new terminal." 2>/dev/null || true
+  [ "$applied" -eq 1 ] && msg="Your configs are applied: open a new terminal." \
+    || msg="Your .confs/install.sh failed (exit $irc)."
+  zenity --info --timeout=10 --title="EPITA AFS" --width=340 \
+      --text="AFS connected at ~/afs: you can start working.\n$msg" 2>/dev/null || true
 else
-  ok "connected at ~/afs; open a new terminal for your setup"
+  [ "$applied" -eq 0 ] || ok "configs applied: open a new terminal for your setup"
 fi
