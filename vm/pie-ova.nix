@@ -31,6 +31,7 @@ let
         cri.machine-state.enable        = lib.mkForce false;
         cri.node-exporter.enable        = lib.mkForce false;
         cri.idle-shutdown.enable        = lib.mkForce false;
+        cri.aria2.enable                = lib.mkForce false;  # campus torrent seeder
 
         # 4. epita user already exists (cri.users.createEpitaUser, no password).
         #    Autologin into the graphical session.

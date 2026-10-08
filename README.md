@@ -50,8 +50,9 @@ over as a file (`docker save | zstd` / `docker load`).
 
 ## Rebuild
 
-- OVAs: `vm/build-ova.sh`. Docker, ~80 GB free disk, seeds a nix store
-  from a local PIE image then builds; ~30 min seed + 1-3 h build.
+- OVAs: `vm/build-ova.sh`. x86_64 Linux, docker, ~150 GB free disk; the
+  PIE store comes from EPITA's public nix cache. Any cloud VM works (no
+  KVM needed); ~1 h on 16 cores. nixpie is pinned in `vm/pie-ova.nix`.
 - Container image: `./pie setup`. Needs `nixos-pie:latest` locally;
   ~10 min.
 
@@ -60,3 +61,6 @@ over as a file (`docker save | zstd` / `docker load`).
 `tests/afs-lab.sh` fakes the EPITA gate locally (KDC + GSSAPI sshd);
 `tests/afs-test.sh` replays the reconnect-the-next-day case in ~5 s.
 Root, Ubuntu/Debian with `/dev/fuse`, or docker (see `tests/afs-lab.sh`).
+
+`tests/ova-check.sh dist/*.ova` checks built OVAs without booting them:
+manifest, baked `afs` = `vm/afs`, root-owned store.
