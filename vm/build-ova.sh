@@ -1,16 +1,17 @@
 #!/bin/sh
 # Build both EPITA PIE appliances from nixpie's nixos-pie config, offline-friendly:
 #   dist/epita-pie-virtualbox.ova  VirtualBox (native: config.system.build.virtualBoxOVA)
-#   dist/epita-pie-vmware.ova      VMware     (ovftool round-trip: vmx-15 hardware, NAT)
+#   dist/epita-pie-vmware.ova      VMware     (same disk, vm/vmware.ovf: vmx-15, NAT)
 #   dist/SHA256SUMS
 #
-# Idempotent: a seeded builder volume and an already-built OVA are reused; only
-# missing work runs. Re-runnable safely. Needs docker; the VMware step also needs
-# VMware's ovftool on the host (skipped with a warning if absent).
+# Idempotent: the builder volume and an already-built OVA are reused; only
+# missing work runs. Re-runnable safely. Needs docker.
+# The PIE store comes from EPITA's public nix cache; a local $PIE_SEED_IMG, if
+# present, seeds it instead (offline).
 #
-# Disk budget: ~80 GB free. The seeded PIE store (~74 GB) lives in a docker volume;
+# Disk budget: ~150 GB free. The PIE store (~74 GB) lives in a docker volume;
 # assembly adds a ~55 GB raw image + a ~13 GB OVA transiently.
-# Time budget (NVMe, warm cache): seed ~30 min, OVA build 1-3 h, ovftool ~20 min.
+# Time budget (NVMe, warm cache): seed ~30 min, OVA build 1-3 h, VMware OVA ~5 min.
 set -eu
 
 SELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -20,8 +21,12 @@ VOL="${PIE_NIX_VOL:-pie-ova-store}"               # dedicated builder volume
 BUILDER="${PIE_BUILDER_IMG:-nixos/nix:latest}"    # sandboxed nix builder (nixbld + CA baked in)
 OUT="$ROOT/dist"
 NIX_CFG="experimental-features = nix-command flakes
-substituters = https://cache.nixos.org
-trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+substituters = https://cache.nixos.org https://s3.cri.epita.fr/cri-nix-cache.s3.cri.epita.fr
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= cache.nix.cri.epita.fr:qDIfJpZWGBWaGXKO3wZL1zmC+DikhMwFRO4RVE6VVeo=
+max-jobs = auto
+system-features = kvm nixos-test benchmark big-parallel uid-range"
+# kvm: the image's bootloader VM requires it, but its qemu falls back to TCG
+# without /dev/kvm (cloud VMs): slower, same result.
 
 # marker output: [*] step  [+] done  [!] warn  [x] fatal
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
@@ -36,7 +41,7 @@ command -v docker >/dev/null 2>&1 || die "docker is required"
 mkdir -p "$OUT"
 
 avail=$(df -Pk "$OUT" | awk 'NR==2 {print int($4/1048576)}')
-[ "${avail:-0}" -ge 70 ] || warn "only ${avail:-?} GB free; ~80 GB recommended for assembly"
+[ "${avail:-0}" -ge 140 ] || warn "only ${avail:-?} GB free; ~150 GB recommended"
 
 docker volume create "$VOL" >/dev/null
 
@@ -46,6 +51,8 @@ docker volume create "$VOL" >/dev/null
 if docker run --rm -v "$VOL":/nix "$BUILDER" \
      sh -c '[ -e /nix/var/nix/db/db.sqlite ] && [ "$(ls /nix/store | wc -l)" -gt 1000 ]' 2>/dev/null; then
   ok "builder store already seeded ($VOL)"
+elif ! docker image inspect "$SEED_IMG" >/dev/null 2>&1; then
+  say "no $SEED_IMG; the PIE store will come from the nix caches"
 else
   say "seeding $VOL from $SEED_IMG /nix (store + DB; ~74 GB, ~30 min)"
   cid=$(docker create "$SEED_IMG" true)
@@ -85,24 +92,25 @@ docker run --rm --privileged --name pie-ova-build \
 [ -s "$OUT/epita-pie-virtualbox.ova" ] || die "epita-pie-virtualbox.ova not produced"
 ok "VirtualBox OVA -> dist/epita-pie-virtualbox.ova"
 
-# 3. VMware OVA (host, needs ovftool). Converting the VBox OVA directly keeps a
-#    virtualbox-2.2 descriptor VMware rejects; round-trip through a VMX so ovftool
-#    re-authors the hardware (vmx-15), then fix the NIC back to NAT (ovftool defaults
-#    a new VMX NIC to bridged) and export a conformant OVA.
-if command -v ovftool >/dev/null 2>&1; then
-  say "building VMware OVA (ovftool round-trip: vmx-15, NAT; ~20 min)"
-  tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-  ovftool --lax --overwrite --allowExtraConfig "$OUT/epita-pie-virtualbox.ova" "$tmp/EPITA-PIE.vmx" >/dev/null 2>&1 \
-    || die "ovftool OVA->VMX failed"
-  sed -i 's/virtualhw.version = "[0-9]*"/virtualhw.version = "15"/;
-          s/ethernet0.connectionType = "bridged"/ethernet0.connectionType = "nat"/' "$tmp/EPITA-PIE.vmx"
-  ovftool --overwrite --targetType=OVA "$tmp/EPITA-PIE.vmx" "$OUT/epita-pie-vmware.ova" >/dev/null 2>&1 \
-    || die "ovftool VMX->OVA failed"
-  rm -rf "$tmp"; trap - EXIT
-  ok "VMware OVA -> dist/epita-pie-vmware.ova"
-else
-  warn "ovftool not on host; skipping VMware OVA (VirtualBox OVA is complete)"
-fi
+# 3. VMware OVA: the same disk under a VMware descriptor (vm/vmware.ovf: vmx-15,
+#    SATA, E1000 on NAT). VMware rejects the VBox OVA's virtualbox-2.2 descriptor,
+#    not its disk. No ovftool needed.
+say "building VMware OVA"
+tmp=$(mktemp -d "$OUT/.vmware.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
+disk=epita-pie-vmware-disk1.vmdk
+tar -xf "$OUT/epita-pie-virtualbox.ova" -C "$tmp" --wildcards '*.vmdk' || die "no disk in epita-pie-virtualbox.ova"
+mv "$tmp"/*.vmdk "$tmp/$disk"
+sed "s/@DISK@/$disk/; s/@SIZE@/$(wc -c <"$tmp/$disk" | tr -d ' ')/" "$SELF/vmware.ovf" >"$tmp/epita-pie-vmware.ovf"
+( cd "$tmp"
+  for f in epita-pie-vmware.ovf "$disk"; do
+    printf 'SHA256(%s)= %s\n' "$f" "$(sha256sum "$f" | cut -d' ' -f1)"
+  done >epita-pie-vmware.mf
+  # descriptor first; gnu format (base-256 sizes) like ovftool: the disk is >8 GiB
+  tar --format=gnu --owner=0 --group=0 --numeric-owner \
+      -cf "$OUT/epita-pie-vmware.ova" epita-pie-vmware.ovf epita-pie-vmware.mf "$disk"
+) || die "VMware OVA packaging failed"
+rm -rf "$tmp"; trap - EXIT
+ok "VMware OVA -> dist/epita-pie-vmware.ova"
 
 # 4. Checksums for the artifacts that exist.
 ( cd "$OUT" && sha256sum epita-pie-virtualbox.ova epita-pie-vmware.ova 2>/dev/null > SHA256SUMS ) || true

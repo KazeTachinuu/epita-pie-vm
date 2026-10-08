@@ -2,7 +2,8 @@
 # Turns the netboot (tmpfs+squashfs+torrent) config into a normal disk image
 # with a bootloader and a real root fs, keeping the graphical PIE desktop.
 # Build target: config.system.build.virtualBoxOVA (OVA) or .qcow (qcow2).
-{ flake ? "github:epita/nixpie" }:
+# Pinned: a rebuild gives the same system. Bump the rev to follow campus.
+{ flake ? "github:epita/nixpie/837363999e9fd7052cf117b440d987743c94a864" }:
 let
   nixpie = builtins.getFlake flake;
   base   = nixpie.nixosConfigurations.nixos-pie;
@@ -54,7 +55,7 @@ let
         '';
 
         # 5. The man-cache derivation fails inside containers (nixpie known issue).
-        documentation.man.generateCaches = lib.mkForce false;
+        documentation.man.cache.enable = lib.mkForce false;
 
         # 5b. The default VM name is ~90 chars; VBoxManage export builds the temp
         #     disk path from it twice and hits VBOX_E_NOT_SUPPORTED "file name
