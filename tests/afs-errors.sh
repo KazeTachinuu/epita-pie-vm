@@ -86,6 +86,7 @@ sed "s/^127.0.0.1 $GATE/10.255.255.1 $GATE/" /tmp/hosts.bak >/tmp/hosts.new; cat
 run 'xlogin\npw\n'
 cat /tmp/hosts.bak >/etc/hosts
 check "cannot reach the gate"      has "cannot reach ssh.cri.epita.fr"
+check "says port 22 is blocked"    has "your network blocks SSH (port 22)"
 check "exit 1, under 2.5 min"      sh -c "[ $rc -eq 1 ] && [ $dt -lt 150 ]"
 
 echo "== 8. gate refuses the login"

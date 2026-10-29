@@ -52,13 +52,28 @@ kwhy() {
     *) echo "${1#kinit: }" ;;
   esac
 }
+# tcp HOST PORT: can the VM open a connection? (bash: the script may run
+# under sh, /dev/tcp is bash-only)
+tcp() { timeout 5 bash -c ": </dev/tcp/$1/$2" 2>/dev/null; }
+# why the gate is out of reach, checked from the VM outwards
+netwhy() {
+  if ! tcp 1.1.1.1 443 && ! tcp 8.8.8.8 53; then
+    echo "the VM has no internet: check its network adapter (NAT, cable connected), then reboot it"
+  elif command -v getent >/dev/null && ! getent hosts ssh.cri.epita.fr >/dev/null 2>&1; then
+    echo "the VM's DNS does not work: reboot the VM"
+  elif ! tcp ssh.cri.epita.fr 22; then
+    echo "your network blocks SSH (port 22): try another network, e.g. a phone hotspot"
+  else
+    echo "the connection stalls: turn off any VPN on your computer and retry"
+  fi
+}
 # sshfs's answer in plain words
 mwhy() {
   case "$1" in
     *"Permission denied"*) echo "the EPITA gate refused your login" ;;
     *"No such file"*) echo "no AFS home found for $login" ;;
     *"timed out"*|*refused*|*"Could not resolve"*|*unreachable*|*"No route"*)
-      echo "cannot reach ssh.cri.epita.fr: check the VM network" ;;
+      echo "cannot reach ssh.cri.epita.fr: $(netwhy)" ;;
     "") echo "unknown error" ;;
     *) echo "$1" ;;
   esac
